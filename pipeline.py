@@ -21,6 +21,9 @@ from flask import Flask, request, jsonify
 from queue import Queue
 import threading
 
+import requests
+
+
 # Read environment variables
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
 NODE_NUMBER = int(os.environ.get('NODE_NUMBER', 0))
@@ -29,6 +32,17 @@ NODE_1_IP = os.environ.get('NODE_1_IP', 'localhost:8000')
 NODE_2_IP = os.environ.get('NODE_2_IP', 'localhost:8000')
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
+
+
+rr_lock = threading.Lock()
+rr_counter = 0
+def get_next_node():
+    global rr_counter
+    with rr_lock:
+        rr_counter = (rr_counter + 1) % TOTAL_NODES
+        return rr_counter
+
+NODE_IPS = [NODE_0_IP, NODE_1_IP, NODE_2_IP]
 
 # Configuration
 CONFIG = {
@@ -313,6 +327,16 @@ class MonolithicPipeline:
 # Global pipeline instance
 pipeline = None
 
+def forward_request(node_idx: int, payload: dict): 
+    target = NODE_IPS[node_idx]
+    url = f"http://{target}/query"
+    try: 
+        r = requests.post(url, json=payload, timeout=300)
+        return r.status_code, r.json()
+    except Exception as e:
+        return 500, {"error", f"forward failed: {e}"}
+
+
 def process_requests_worker():
     """Worker thread that processes requests from the queue"""
     global pipeline
@@ -363,6 +387,13 @@ def handle_query():
             if request_id in results:
                 return jsonify(results[request_id]), 200
         
+        target = get_next_node()
+        if NODE_NUMBER == 0 and target != 0:  
+            print(f"forwarding request {request_id} to {target}")
+            status, resp = forward_request(target, data)
+            # logic in results.pop seems like we don't cache requests
+            return jsonify(resp), status
+
         print(f"queueing request {request_id}")
         # Add to queue
         request_queue.put({
