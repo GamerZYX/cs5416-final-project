@@ -1,3 +1,6 @@
+# Python version requirement: Python >= 3.8, < 3.12
+# Tested with Python 3.10
+
 torch
 transformers
 numpy
