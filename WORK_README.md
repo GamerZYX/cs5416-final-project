@@ -123,17 +123,6 @@ Below is the clear division of work for each member of our team.
 
 ---
 
-# 🧩 Summary Table
-
-| Person | Responsibilities | Difficulty | Notes |
-|--------|------------------|------------|-------|
-| **A** | Node0 + orchestration + embedding | Medium | Core system glue |
-| **B** | FAISS + documents + rerank | Low–Medium | Large model loading, but stable once done |
-| **C** | LLM + sentiment + toxicity | High | Main CPU bottleneck |
-| **D** | Batching + profiling + report | High | Cross-cutting + analytical |
-
----
-
 # ✔️ Final Notes
 This division ensures:
 - Workload is balanced  
