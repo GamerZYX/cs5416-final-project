@@ -15,37 +15,7 @@ venv.bak/
 
 # Project specific data files
 faiss_index.bin
-documents/documents.db
-documents/*.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# Environment variables
-.env
-.env.local
-
-# Test files
+documents/
+.venv/
+__pycache__/
 test.py
-*.test.py
-
-# Temporary files
-*.tmp
-*.bak
-*.cache
