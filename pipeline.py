@@ -293,9 +293,10 @@ class PipelineStages:
         for idx, doc_ids in enumerate(doc_id_batches):
             results.append({
                 'query': batch_data[idx]['query'],
-                'embedding': batch_data[idx]['embedding'], # can probably cut embeddings and query
                 'doc_ids': doc_ids
             })
+            
+        print(results[0])
             
         return results
 
@@ -602,6 +603,7 @@ def handle_query():
 @app.route('/retrieval_batch', methods=['POST'])
 def handle_retrieval_batch():
     """FAISS Retrieval (index search only) request endpoint (Node 1 only)."""
+    print('recieved')
     if NODE_NUMBER != 1:
         return jsonify({'error': 'FAISS retrieval runs only on Node 1'}), 403
 
@@ -624,10 +626,11 @@ def handle_retrieval_batch():
             result = f.result(timeout=300)
             # Re-package with request_id for the next hop
             results_with_id.append({'request_id': item['request_id'], **result})
-        
+            
         return jsonify({'results': results_with_id}), 200
 
     except Exception as e:
+        print('error', e)
         return jsonify({'error': str(e)}), 500
 
 # Node 2
@@ -709,7 +712,7 @@ def main():
     print(f"\nStarting Flask server on {hostname}:{port}")
     # Use threaded=False if you want gunicorn for production, but Flask's built-in 
     # threaded server is fine for this project.
-    app.run(host=hostname, port=port, threaded=True)
+    app.run(host=hostname, port=port)
 
 
 if __name__ == "__main__":
