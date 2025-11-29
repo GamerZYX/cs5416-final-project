@@ -12,7 +12,7 @@ def _initialize_documents():
         DOCUMENTS_DIR = "documents/"
         os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 
-        db_path = os.path.join(DOCUMENTS_DIR, "documentss.db")
+        db_path = os.path.join(DOCUMENTS_DIR, "documents.db")
 
         if not os.path.exists(db_path):
             print("Creating document database...")
