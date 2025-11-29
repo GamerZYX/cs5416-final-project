@@ -3,14 +3,16 @@ import os
 import numpy as np
 import faiss
 
+# NUM_DOCUMENTS = 4500000
+NUM_DOCUMENTS = 100000
+
 def _initialize_documents():
         """Create dummy documents database if it doesn't exist"""
 
         DOCUMENTS_DIR = "documents/"
-        NUM_DOCUMENTS = 4500000
         os.makedirs(DOCUMENTS_DIR, exist_ok=True)
 
-        db_path = os.path.join(DOCUMENTS_DIR, "documents.db")
+        db_path = os.path.join(DOCUMENTS_DIR, "documentss.db")
 
         if not os.path.exists(db_path):
             print("Creating document database...")
@@ -64,7 +66,6 @@ def _initialize_documents():
 def _create_faiss_index():
         """Create a large FAISS index"""
         dim = 768
-        num_docs = 4500000
         index_path = "faiss_index.bin"
 
         nlist=4096
@@ -74,13 +75,13 @@ def _create_faiss_index():
         index.train(np.random.randn(10000, dim).astype('float32'))
         # Add vectors in batches to manage memory
         batch_size = 10000
-        for i in range(0, num_docs, batch_size):
+        for i in range(0, NUM_DOCUMENTS, batch_size):
             # Generate random embeddings (in real scenario, these would be document embeddings)
-            batch_embeddings = np.random.randn(min(batch_size, num_docs - i), dim).astype('float32')
+            batch_embeddings = np.random.randn(min(batch_size, NUM_DOCUMENTS - i), dim).astype('float32')
             index.add(batch_embeddings)
             
             if i % 100000 == 0:
-                print(f"Added {i}/{num_docs} vectors to index...")
+                print(f"Added {i}/{NUM_DOCUMENTS} vectors to index...")
         
         # Save index
         index.nprobe = 64
