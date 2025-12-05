@@ -119,67 +119,80 @@ class test_llm:
 
     def run_test(self, batch_size, n_iters=10):
         times = []
-
-        context_list = []
+        prompt_times = []
+        tokenize_times = []
+        llm_times = []
+        decode_times = []
+        
+        doc_list = []
         queries = random.choices(self.TEST_QUERIES, k=batch_size)
         for _ in queries: 
-            context_list.append([random.choices(list(self.docs.values()), k=self.TOP_N)])
-        for _ in range(batch_size): 
-            context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc, _ in doc_scores[:self.TOP_N]])
-            context_list.append(context)
-
-
-        llm_input_texts = []
-        for query, context in zip([d['query'] for d in batch_data], context_list):
-            messages = [
-                {"role": "system",
-                "content": "When given Context and Question, reply as 'Answer: <final answer>' only."},
-                {"role": "user",
-                "content": f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"}
-            ]
-            text = self.llm_tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            llm_input_texts.append(text)
-
-        query_document_pairs = []
-        for _ in range(batch_size): 
-            query = random.choice(test_llm.TEST_QUERIES)
-            docs = random.choices(list(self.docs.values()), k=CONFIG["retrieval_k"])
-            query_document_pairs.extend([query, doc['content']] for doc in docs)
-
-            
-        self.tracker.set_event(f"BATCH_SIZE_START: {batch_size}") # Mark the start of the batch test
+            doc_list.append(random.choices(list(self.docs.values()), k=self.TOP_N))
         
-        for i in range(n_iters):
+
+        self.tracker.set_event(f"BATCH_SIZE_START: {batch_size}") # Mark the start of the batch test
+        for i in range(batch_size):
             start = time.perf_counter()
+            context_list = []
+            for sub_docs in doc_list: 
+                context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc in sub_docs[:self.TOP_N]])
+                context_list.append(context)
+            llm_input_texts = []
 
-            with torch.no_grad():
-                inputs = self.reranker_tokenizer(
-                    query_document_pairs,
-                    padding=True,
-                    truncation=True,
-                    return_tensors='pt',
-                    max_length=CONFIG['truncate_length']
+            p_start = time.perf_counter()
+            for query, context in zip(queries, context_list):
+                messages = [
+                    {"role": "system",
+                    "content": "When given Context and Question, reply as 'Answer: <final answer>' only."},
+                    {"role": "user",
+                    "content": f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer:"}
+                ]
+                text = self.llm_tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
                 )
-                scores = self.reranker_model(**inputs, return_dict=True).logits.view(-1, ).float().tolist() # type: ignore
+                llm_input_texts.append(text)
+            p_end = time.perf_counter()
 
+            t_start = time.perf_counter()
+            model_inputs = self.llm_tokenizer(llm_input_texts, return_tensors="pt", padding=True)
+            t_end = time.perf_counter()
+
+            l_start = time.perf_counter()
+            with torch.no_grad():
+                generated_ids = self.llm_model.generate(
+                    **model_inputs,
+                    max_new_tokens=CONFIG['max_tokens'],
+                    temperature=0.01,
+                    pad_token_id=self.llm_tokenizer.eos_token_id
+                )
+            l_end = time.perf_counter()
+
+            input_length = model_inputs.input_ids.shape[1]
+            generated_ids = generated_ids[:, input_length:]
+            
+            d_start = time.perf_counter()
+            generated_responses = self.llm_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+            d_end = time.perf_counter()
 
             end = time.perf_counter()
             times.append((end - start))
-        self.tracker.set_event(f"BATCH_SIZE_END: {batch_size}") # Mark the end of the batch test
 
+            prompt_times.append(p_start - p_end)
+            tokenize_times.append(t_start - t_end)
+            llm_times.append(l_start - l_end)
+            decode_times.append(d_start - d_end)
         
-        average_time = np.mean(times)
-        std_dev = np.std(times)
-        return average_time, std_dev
+        self.tracker.set_event(f"BATCH_SIZE_END: {batch_size}") # Mark the end of the batch test
+        
+        
+        return times, prompt_times, tokenize_times, llm_times, decode_times
 
 
 if __name__=="__main__": 
     # 1. Initialize and start the Memory Tracker
-    memory_tracker = MemoryTracker(interval=0.1, output_file=f"./test_results/{test_llm.NAME}_mem.csv")
+    memory_tracker = MemoryTracker(interval=0.5, output_file=f"./test_results/{test_llm.NAME}_mem.csv")
     memory_tracker.start()
     
     # 2. Initialize the test runner, which triggers model loading events
@@ -197,14 +210,29 @@ if __name__=="__main__":
     # 3. Run the tests, triggering batch events
     res = []
     # Test batch sizes 1, 2, 4, 8, 16
-    for i in (1, 2, 4, 8, 16): 
-        avg, std = tester.run_test(i)
-        res.append((i, avg, std))
+    for i in (1, 2, 4): 
+        times, prompt_times, tokenize_times, llm_times, decode_times = tester.run_test(i, 4)
+        
+        res.append(
+            (i, np.mean(times), np.std(times),
+            np.mean(prompt_times), np.std(prompt_times),
+            np.mean(tokenize_times), np.std(tokenize_times),
+            np.mean(llm_times), np.std(llm_times),
+            np.mean(decode_times), np.std(decode_times)    
+            )    
+        )
     
     # 4. Write embedding timing results
     with open(f"./test_results/{tester.NAME}_timing.csv", "w", newline='') as f: 
         writer = csv.writer(f)
-        writer.writerow(["Batch_Size", "Avg_Time_s", "Std_Dev_s"])
+        writer.writerow(
+            ["Batch_Size", "Avg_Time_s", "Std_Dev_s", 
+             "Avg_Prompt_Time_s", "Std_Prompt_s", 
+             "Avg_tokenize_Time_s", "Std_tokenize_s", 
+             "Avg_llm_s", "Std_llm_s", 
+             "Avg_decode_s", "Std_decode_s"
+            ]
+        )
         writer.writerows(res)
     print("results written to csv")
     

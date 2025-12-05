@@ -37,7 +37,8 @@ class MemoryTracker(threading.Thread):
                 self.memory_data.append((time.time(), rss_mb, self._current_event_tag))
                 
                 # Clear the tag after logging it once
-                self._current_event_tag = "" 
+                if self._current_event_tag:  
+                    self._current_event_tag = "" 
                 
                 # Wait for the specified interval
                 time.sleep(self.interval)
