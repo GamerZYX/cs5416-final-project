@@ -179,10 +179,10 @@ class test_llm:
             end = time.perf_counter()
             times.append((end - start))
 
-            prompt_times.append(p_start - p_end)
-            tokenize_times.append(t_start - t_end)
-            llm_times.append(l_start - l_end)
-            decode_times.append(d_start - d_end)
+            prompt_times.append( p_end-p_start)
+            tokenize_times.append( t_end-t_start)
+            llm_times.append( l_end-l_start)
+            decode_times.append( d_end-d_start)
         
         self.tracker.set_event(f"BATCH_SIZE_END: {batch_size}") # Mark the end of the batch test
         
