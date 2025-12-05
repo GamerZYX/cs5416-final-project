@@ -80,24 +80,24 @@ class PipelineResponse:
     processing_time: float 
 
 
-class test_toxic: 
-    NAME = "TOXIC"
+class test_sentiment: 
+    NAME = "SENTIMENT"
     def __init__(self, tracker): 
         self.tracker = tracker
         
-        self.safety_model_name = 'unitary/toxic-bert'
+        self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
 
         with open("./test_data/asdf.json", 'r') as f: 
             self.generated_responses = json.load(f)
 
         self.tracker.set_event(f"{self.NAME}_LOAD_START")
-        self.safety_classifier = hf_pipeline(
-            "text-classification",
-            model=self.safety_model_name,
+        self.sentiment_classifier = hf_pipeline(
+            "sentiment-analysis",
+            model=self.sentiment_model_name,
             # device=self.device
         )
         self.tracker.set_event(f"{self.NAME}_LOAD_END")
-        print("Loaded Safety.")
+        print("Loaded Sentiment Classifier.")
 
 
 
@@ -107,25 +107,25 @@ class test_toxic:
         texts = [self.generated_responses[i] for i in random_choices]
         times = []
 
-
-            
-
         self.tracker.set_event(f"BATCH_SIZE_START: {batch_size}") # Mark the start of the batch test
         for _ in range(n_iters): 
             start = time.perf_counter()
 
             truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-            raw_results = self.safety_classifier(truncated_texts) 
-            
-            results = []
-            for res in raw_results:
-                is_toxic = res['score'] > 0.5
-                results.append("true" if is_toxic else "false")
-            
-                end = time.perf_counter()
-                times.append((end - start))
-
+            raw_results = self.sentiment_classifier(truncated_texts)
+            sentiment_map = {
+                '1 star': 'very negative',
+                '2 stars': 'negative',
+                '3 stars': 'neutral',
+                '4 stars': 'positive',
+                '5 stars': 'very positive'
+            }
+            _ = [sentiment_map.get(res['label'], 'neutral') for res in raw_results]
+        
+            end = time.perf_counter()
+            times.append((end - start))
         self.tracker.set_event(f"BATCH_SIZE_END: {batch_size}") # Mark the end of the batch test
+
         
         average_time = np.mean(times)
         std_dev = np.std(times)
@@ -134,12 +134,12 @@ class test_toxic:
 
 if __name__=="__main__": 
     # 1. Initialize and start the Memory Tracker
-    memory_tracker = MemoryTracker(interval=0.1, output_file=f"./test_results/{test_toxic.NAME}_mem.csv")
+    memory_tracker = MemoryTracker(interval=0.1, output_file=f"./test_results/{test_sentiment.NAME}_mem.csv")
     memory_tracker.start()
     
     # 2. Initialize the test runner, which triggers model loading events
     try:
-        tester = test_toxic(memory_tracker)
+        tester = test_sentiment(memory_tracker)
     except Exception as e:
         print(f"Error loading model: {e}")
         # Stop and log memory data even if model loading fails
