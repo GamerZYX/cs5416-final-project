@@ -278,13 +278,7 @@ class PipelineStages:
 
     # NODE 1 : FAISS Retrieval (No Doc Fetch)
     @time_function
-    def process_retrieval_batch(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
-        """
-        Main Node 1 code (FAISS index lookup only)
-        Input: [{'embedding': list, 'query': str}]
-        Output: [{'query': str, 'embedding': list, 'doc_ids': list}]
-        """
-        
+    def _search_faiss(self, batch_data: List[Dict]) -> List[Dict]: 
         query_embeddings = np.array([data['embedding'] for data in batch_data], dtype='float32')
         _, indices = self.faiss_index.search(query_embeddings, CONFIG['retrieval_k'])
         doc_id_batches = [row.tolist() for row in indices]
@@ -295,9 +289,19 @@ class PipelineStages:
                 'query': batch_data[idx]['query'],
                 'doc_ids': doc_ids
             })
-            
-        print(results[0])
-            
+        
+        return results
+
+    
+    def process_retrieval_batch(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
+        """
+        Main Node 1 code (FAISS index lookup only)
+        Input: [{'embedding': list, 'query': str}]
+        Output: [{'query': str, 'embedding': list, 'doc_ids': list}]
+        """
+    
+        results = self._search_faiss(batch_data)            
+                    
         return results
 
     
@@ -335,6 +339,7 @@ class PipelineStages:
             }
         conn.close()
         return doc_map
+    
     @time_function
     def _rerank_documents_batch(self, query_document_pairs: List[List[str]]) -> List[float]:
         """
@@ -369,7 +374,7 @@ class PipelineStages:
             '4 stars': 'positive',
             '5 stars': 'very positive'
         }
-        return [sentiment_map.get(res['label'], 'FAILURE') for res in raw_results]
+        return [sentiment_map.get(res['label'], 'neutral') for res in raw_results]
     @time_function
     def _filter_safety_batch(self, texts: List[str]) -> List[str]:
         """Filter response for safety for a batch of responses."""
