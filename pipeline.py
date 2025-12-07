@@ -539,7 +539,7 @@ def main():
         embedder_service = Embedder(8, (150-30)//2, device)
         docfetch_service = DocFetch(8, (172-131)//2)
         rerank_service = Rerank(16, 60, device)
-        llm_service = LLM(1, 10, device)
+        llm_service = LLM(4, 500, device)
         sentiment_service = Sentiment(8, (600-170)//2, device)
         safety_service = Safety(4, (160-80)//2, device)
         
