@@ -126,7 +126,7 @@ class BatchingService:
             ):
                 
                 # TODO: DEL ME
-                report = "[{NODE_NUMBER}, {self.name}]\n"
+                report = f"[{NODE_NUMBER}, {self.name}]\n"
                 if (len(current_batch) >= self.max_size): 
                     report += f"\tBatch triggered: Queue Full after {time_elapsed}\n"
                 else: 
@@ -144,7 +144,7 @@ class BatchingService:
                     results = self.process_batch_func(batch_ids, batch_data)
                     end = time.perf_counter()
                     report += f"\tProcessed in {end - start} seconds\n"
-                    print(report)
+                    print(report, flush=True)
                     # 4. Set results/exceptions on the Futures
                     for item, result in zip(current_batch, results):
                         item.future.set_result(result)
@@ -494,7 +494,7 @@ def handle_retrieval_batch():
         f = faiss_service.submit(data['request_id'], data)
             
         result = f.result(timeout=300)
-        print('faiss_result', result)
+        # print('faiss_result', result)
             
         return jsonify(result), 200
 

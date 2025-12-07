@@ -40,7 +40,7 @@ documents/
 Thumbs.db
 
 # Logs
-*.log
+
 logs/
 
 # Environment variables
@@ -55,4 +55,4 @@ test.py
 *.tmp
 *.bak
 *.cache
-results/
+testing/results/
