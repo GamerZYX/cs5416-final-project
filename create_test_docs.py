@@ -3,8 +3,8 @@ import os
 import numpy as np
 import faiss
 
-# NUM_DOCUMENTS = 4500000
-NUM_DOCUMENTS = 100000
+NUM_DOCUMENTS = 4500000
+# NUM_DOCUMENTS = 100000
 
 def _initialize_documents():
         """Create dummy documents database if it doesn't exist"""
@@ -65,6 +65,7 @@ def _initialize_documents():
 
 def _create_faiss_index():
         """Create a large FAISS index"""
+        return
         dim = 768
         index_path = "faiss_index.bin"
 
