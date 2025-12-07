@@ -168,7 +168,7 @@ class Base_Service(ABC):
         pass
 
 class Embedder(Base_Service):
-    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'):
+    def __init__(self, max_size, max_wait_ms, device):
             self.device = device 
             self.embedding_model_name = 'BAAI/bge-base-en-v1.5'
             self.embedding_model = SentenceTransformer(self.embedding_model_name).to(self.device)
@@ -253,7 +253,8 @@ class DocFetch(Base_Service):
         return results
 
 class Rerank(Base_Service): 
-    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'): 
+    def __init__(self, max_size, max_wait_ms, device): 
+        self.device = device
         self.reranker_model_name = 'BAAI/bge-reranker-base'
         self.reranker_tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
         self.reranker_model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device).eval()
@@ -296,7 +297,7 @@ class Rerank(Base_Service):
         return res
 
 class LLM(Base_Service): 
-    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'): 
+    def __init__(self, max_size, max_wait_ms, device): 
         self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
         self.device = device
 
@@ -344,7 +345,7 @@ class LLM(Base_Service):
         return [{"generated_response": gr} for gr in generated_responses]
     
 class Sentiment(Base_Service): 
-    def __init__(self, max_size, max_wait_ms, device:str = "cpu"): 
+    def __init__(self, max_size, max_wait_ms, device): 
         self.device = device
 
         self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
@@ -369,7 +370,7 @@ class Sentiment(Base_Service):
         return [{"sentiment": sentiment_map.get(res['label'], 'neutral')} for res in raw_results]
 
 class Safety(Base_Service): 
-    def __init__(self, max_size, max_wait_ms, device:str = "cpu"): 
+    def __init__(self, max_size, max_wait_ms, device): 
         self.device = device
         self.safety_model_name = 'unitary/toxic-bert'
 
@@ -485,25 +486,6 @@ def handle_query():
         return jsonify({'error': str(e)}), 500
     
 
-@app.route('/process_pipeline_batch', methods=['POST'])
-def handle_pipeline_batch():
-    """Endpoint for Node 0 to forward work to Node 1, and for Node 0 to execute locally."""
-    if NODE_NUMBER not in [0, 1]:
-        return jsonify({'error': 'This pipeline runs on Node 0 or Node 1'}), 403
-    
-    try:
-        data = request.json.get('batch', [])
-        
-        # The received batch is processed by the local orchestration function
-        final_results_with_id = process_pipeline_batch_local(data)
-        
-        return jsonify({'results': final_results_with_id}), 200
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-
 @app.route('/retrieval_batch', methods=['POST'])
 def handle_retrieval_batch():
     """FAISS Retrieval (index search only) request endpoint (Node 2 only)."""
@@ -560,12 +542,12 @@ def main():
     if NODE_NUMBER in [0, 1]:
         # NOTE: MAX_BATCH_SIZE and MAX_WAIT_TIME_MS must be defined in CONFIG
         
-        embedder_service = Embedder(MAX_SIZE, MAX_WAIT, device)
-        docfetch_service = DocFetch(MAX_SIZE, MAX_WAIT)
-        rerank_service = Rerank(MAX_SIZE, MAX_WAIT, device)
-        llm_service = LLM(MAX_SIZE, MAX_WAIT, device)
-        sentiment_service = Sentiment(MAX_SIZE, MAX_WAIT, device)
-        safety_service = Safety(MAX_SIZE, MAX_WAIT, device)
+        embedder_service = Embedder(8, (150-30)//2, device)
+        docfetch_service = DocFetch(8, (172-131)//2)
+        rerank_service = Rerank(16, 60, device)
+        llm_service = LLM(1, 10, device)
+        sentiment_service = Sentiment(8, (600-170)//2, device)
+        safety_service = Safety(4, (160-80)//2, device)
         
         print(f"Node {NODE_NUMBER} loaded full pipeline services.")
         
