@@ -211,7 +211,7 @@ if __name__=="__main__":
     res = []
     # Test batch sizes 1, 2, 4, 8, 16
     for i in (1, 2, 4): 
-        times, prompt_times, tokenize_times, llm_times, decode_times = tester.run_test(i, 4)
+        times, prompt_times, tokenize_times, llm_times, decode_times = tester.run_test(i, 20)
         
         res.append(
             (i, np.mean(times), np.std(times),
