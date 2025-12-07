@@ -34,8 +34,8 @@ import itertools
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
 NODE_NUMBER = int(os.environ.get('NODE_NUMBER', 0))
 NODE_0_IP = os.environ.get('NODE_0_IP', 'localhost:8000')
-NODE_1_IP = os.environ.get('NODE_1_IP', 'localhost:8000')
-NODE_2_IP = os.environ.get('NODE_2_IP', 'localhost:8000')
+NODE_1_IP = os.environ.get('NODE_1_IP', 'localhost:8001')
+NODE_2_IP = os.environ.get('NODE_2_IP', 'localhost:8002')
 FAISS_INDEX_PATH = os.environ.get('FAISS_INDEX_PATH', 'faiss_index.bin')
 DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', 'documents/')
 
@@ -181,12 +181,11 @@ class Embedder(Base_Service):
         embeddings = self.embedding_model.encode(
             queries, 
             normalize_embeddings=True, 
-            convert_to_numpy=False, # since we will need to send these
         )
         results = []
         for embedding in embeddings: 
             results.append({
-                "embedding": embedding
+                "embedding": embedding.tolist()
             })
         return results
 
@@ -222,10 +221,11 @@ class DocFetch(Base_Service):
 
         super().__init__(max_size, max_wait_ms)
     
-    def _batch_job(self, batch_ids: list[str], batch_data: List[Dict]) -> List[Dict]: 
+    def _batch_job(self, batch_ids: list[str], batch_data: List[Dict]) -> List[Dict]:
         doc_ids = set()
         for data in batch_data:
             doc_ids.update(data.get('doc_ids', []))
+        
         
         cursor = self.conn.cursor()
         doc_map = {}
@@ -234,7 +234,7 @@ class DocFetch(Base_Service):
         # Single batched SQL query
         cursor.execute(
             f'SELECT doc_id, title, content, category FROM documents WHERE doc_id IN ({doc_ids_str})',
-            doc_ids
+            tuple(doc_ids)
         )
         
         for result in cursor.fetchall():
@@ -248,7 +248,7 @@ class DocFetch(Base_Service):
         results = []
         for data in batch_data:
             results.append({
-                doc_id: doc_map[doc_id] for doc_id in data.values()
+                doc_id: doc_map[doc_id] for doc_id in data.get('doc_ids', [])
             })
         return results
 
@@ -266,7 +266,7 @@ class Rerank(Base_Service):
         pair_counts = []
         for data in batch_data: 
             per_req_pair = []
-            for doc in data['doc_ids']: 
+            for doc_id, doc in data['doc_ids'].items(): 
                 per_req_pair.append([data['query'], doc['content']])
             pair_counts.append(len(per_req_pair))
             query_doc_pairs.extend(per_req_pair)
@@ -329,7 +329,6 @@ class LLM(Base_Service):
             llm_input_texts.append(text)
             
         model_inputs = self.llm_tokenizer(llm_input_texts, return_tensors="pt", padding=True).to(self.device)
-        
         with torch.no_grad():
             generated_ids = self.llm_model.generate(
                 **model_inputs,
@@ -341,7 +340,6 @@ class LLM(Base_Service):
         input_length = model_inputs.input_ids.shape[1]
         generated_ids = generated_ids[:, input_length:]
         generated_responses = self.llm_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-
         return [{"generated_response": gr} for gr in generated_responses]
     
 class Sentiment(Base_Service): 
@@ -384,7 +382,7 @@ class Safety(Base_Service):
     
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         """Filter response for safety for a batch of responses."""
-        truncated_texts = [data['response'][:CONFIG['truncate_length']] for data in batch_data]
+        truncated_texts = [data['generated_response'][:CONFIG['truncate_length']] for data in batch_data]
         raw_results = self.safety_classifier(truncated_texts) 
         
         results = []
@@ -427,10 +425,7 @@ def forward_request(node_id: int, endpoint: str, data: Dict) -> Dict:
 
 @app.route('/query', methods=['POST'])
 def handle_query():
-    """Client-facing endpoint (Node 0 only)."""
-    if NODE_NUMBER != 0:
-        return jsonify({'error': 'Only Node 0 handles client queries'}), 400
-    
+    """Client-facing endpoint (Node 0 only)."""    
     try:
         if NODE_NUMBER == 0: 
             worker_id = get_next_worker_url()
@@ -445,15 +440,14 @@ def handle_query():
 
         future_embed = embedder_service.submit(request_id, {'query': query})
         embedded_result = future_embed.result(timeout=300)
-        
+
         # --- 2. FORWARD to Node 2 for FAISS RETRIEVAL ---
         # Node 2 expects a batch, we send a batch of size 1
         node2_result = forward_request(
             node_id=2,
             endpoint='retrieval_batch',
-            data={'request_id': request_id, 'embedding': embedded_result}
+            data={'request_id': request_id, 'embedding': embedded_result['embedding']}
         ) # doc id: [int]
-        
         # embedder_service, docfetch_service, rerank_service, llm_service, sentiment_service, safety_service, faiss_service
         future_doc_fetch = docfetch_service.submit(request_id, node2_result) 
         doc_fetch_results = future_doc_fetch.result(timeout=300)
@@ -461,10 +455,10 @@ def handle_query():
         future_rerank = rerank_service.submit(request_id, {"query": query, "doc_ids": doc_fetch_results})
         rerank_results = future_rerank.result(timeout=300)
 
-        zipped = zip(doc_fetch_results, rerank_results['scores'])
-        doc_scores = sorted(zipped, lambda x: x[1], reverse=True)
+        zipped = list(zip(doc_fetch_results.values(), rerank_results['scores']))
+        doc_scores = sorted(zipped, key=lambda x: x[1], reverse=True)
         context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc, _ in doc_scores[:3]])
-
+        
         future_llm = llm_service.submit(request_id, {"query": query, "context": context})
         llm_results = future_llm.result(timeout=300)
 
@@ -489,17 +483,14 @@ def handle_query():
 @app.route('/retrieval_batch', methods=['POST'])
 def handle_retrieval_batch():
     """FAISS Retrieval (index search only) request endpoint (Node 2 only)."""
-    if NODE_NUMBER != 2:
-        return jsonify({'error': 'FAISS retrieval runs only on Node 2'}), 403
-
     try:
         data = request.json # type: ignore
         
-        futures = []
         # Must convert list back to numpy array for FAISS processing
-        f = faiss_service.submit(data['request_id'], data['embedding'])
+        f = faiss_service.submit(data['request_id'], data)
             
         result = f.result(timeout=300)
+        print('faiss_result', result)
             
         return jsonify(result), 200
 
@@ -510,7 +501,10 @@ def handle_retrieval_batch():
 pipeline_stages = None
 batching_service = None
 
-PIPELINE_WORKER_URLS = [0, 1]
+if TOTAL_NODES >  2: 
+    PIPELINE_WORKER_URLS = [0, 1]
+else: 
+    PIPELINE_WORKER_URLS = [0]
 FAISS_NODE_URL = f"http://{NODE_2_IP}/retrieval_batch"
 
 # Round-Robin state for pipeline workers
