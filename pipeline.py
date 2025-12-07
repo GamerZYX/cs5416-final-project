@@ -27,21 +27,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import logging
 import time
-from functools import wraps
-
-def time_function(func):
-    """
-    A decorator that logs the execution time of a function.
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)        
-        end_time = time.time()
-        duration = end_time - start_time
-        logging.info(f"Function '{func.__name__}' executed in {duration:.4f} seconds.")        
-        return result
-    return wrapper
+from abc import ABC, abstractmethod
+import itertools
 
 # Read environment variables
 TOTAL_NODES = int(os.environ.get('TOTAL_NODES', 1))
@@ -61,11 +48,11 @@ CONFIG = {
     'retrieval_k': 10, #You must retrieve this many documents from the FAISS index
     'truncate_length': 512, # You must use this truncate length
     ############################
-    'MAX_BATCH_SIZE': 4, # this will be determined by memory
-    'MAX_WAIT_TIME_MS': 5 # lower number --> lower latency but lower throughput
 }
 
 app = Flask(__name__)
+
+
 
 @dataclass
 class BatchItem:
@@ -127,16 +114,18 @@ class BatchingService:
                 item = self.input_queue.get(timeout=0.001)
                 current_batch.append(item)
                 if timer_start is None:
-                    timer_start = time.time()
+                    timer_start = time.perf_counter()
             except Exception: 
                 pass
             
-            time_elapsed = time.time() - timer_start if timer_start else 0.0
+            time_elapsed = time.perf_counter() - timer_start if timer_start else 0.0
             
             if (
                 len(current_batch) >= self.max_size or # reached max size 
                 (current_batch and time_elapsed >= self.max_wait) # waited long enough
             ):
+                
+                # TODO: DEL ME
                 if (len(current_batch) >= self.max_size): 
                     print("\t Batch triggered: Queue Full after", time_elapsed)
                 else: 
@@ -169,116 +158,46 @@ class BatchingService:
             if not current_batch:
                 time.sleep(0.001)
 
+class Base_Service(ABC): 
+    def __init__(self, max_size, max_wait_ms): 
+        self.batch_service = BatchingService(self._batch_job, max_size, max_wait_ms)
+    def submit(self, request_id, data:Dict[str, Any]) -> Future: 
+        return self.batch_service.submit(request_id, data)
+    @abstractmethod
+    def _batch_job(self, batch_ids: list[str], batch_data: List[Dict]) -> List[Dict]: 
+        pass
 
-class PipelineStages:
-    """
-    Cut up Monolith
-    """
-    def __init__(self, device):
-        self.device = device
-
-        self.embedding_model_name = 'BAAI/bge-base-en-v1.5'
-        self.reranker_model_name = 'BAAI/bge-reranker-base'
-        self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
-        self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
-        self.safety_model_name = 'unitary/toxic-bert'
-
-
-        self.embedding_model = None
-        self.faiss_index = None # Node 1
-        self.reranker_model = None # Node 2
-        self.reranker_tokenizer = None # Node 2
-        self.llm_model = None # Node 2
-        self.llm_tokenizer = None # Node 2
-        self.sentiment_classifier = None # Node 2
-        self.safety_classifier = None # Node 2
-        
-        # Parallel executor for Node 2 analysis
-        self.executor = ThreadPoolExecutor(max_workers=CONFIG['MAX_BATCH_SIZE']) 
-
-    @time_function
-    def load_models_for_node(self, node_id):
-        """
-        Load models for the current node.
-        """
-        print(f"Node {node_id}: Load Models")
-        
-        # Node 0: Embedder
-        if node_id == 0:
+class Embedder(Base_Service):
+    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'):
+            self.device = device 
+            self.embedding_model_name = 'BAAI/bge-base-en-v1.5'
             self.embedding_model = SentenceTransformer(self.embedding_model_name).to(self.device)
             print(f"Loaded Embedder: {self.embedding_model_name}.")
-        
-        # Node 1: FAISS Index
-        if node_id == 1:
-            if not os.path.exists(CONFIG['faiss_index_path']):
-                raise FileNotFoundError("FAISS index not found on Node 1.")
-            self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])
-            print(f"Loaded FAISS Index.")
 
-        # Node 2:  Reranker, LLM, Sentiment, Toxicity
-        if node_id == 2:
-            # reranker
-            self.reranker_tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
-            self.reranker_model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device).eval()
-            print("Loaded Reranker.")
-
-            # LLM
-            self.llm_tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
-            self.llm_model = AutoModelForCausalLM.from_pretrained(
-                self.llm_model_name,
-                torch_dtype=torch.float16, 
-            ).to(self.device)
-            self.llm_model.eval()
-            print("Loaded LLM.")
-
-            # Sentiment
-            self.sentiment_classifier = hf_pipeline(
-                "sentiment-analysis",
-                model=self.sentiment_model_name,
-                device=self.device
-            )
-            print("Loaded Sentiment Classifier.")
-
-            # Safety
-            self.safety_classifier = hf_pipeline(
-                "text-classification",
-                model=self.safety_model_name,
-                device=self.device
-            )
-            print("Loaded Safety Classifier.")
-            
-            
-
-        
-        print(f"Node {node_id}: Model loading complete.")
-
-    # NODE 0: EMBEDDING
-    @time_function
-    def _embed_batch(self, queries): 
-        return self.embedding_model.encode(
-            queries,
-            normalize_embeddings=True,
-            convert_to_numpy=True
-        )
-
-    @time_function
-    def process_embedding_batch(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
-        """Input: [{'query': str}] -> Output: [{'embedding': np.ndarray, 'query': str}]"""
+            super().__init__(max_size, max_wait_ms)
+    
+    def _batch_job(self, batch_id: list[str], batch_data: List[Dict]) -> List[Dict]: 
         queries = [data['query'] for data in batch_data]
-        embeddings = self._embed_batch(queries)
-        
+        embeddings = self.embedding_model.encode(
+            queries, 
+            normalize_embeddings=True, 
+            convert_to_numpy=False, # since we will need to send these
+        )
         results = []
-        for query, embedding in zip(queries, embeddings):
-            # Convert numpy array to list for JSON serialization in transit
+        for embedding in embeddings: 
             results.append({
-                'query': query, 
-                'embedding': embedding.tolist() 
+                "embedding": embedding
             })
         return results
 
-    # NODE 1 : FAISS Retrieval (No Doc Fetch)
-    @time_function
-    def process_retrieval_batch(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
+class FAISS(Base_Service): 
+    def __init__(self, max_size, max_wait_ms): 
+        if not os.path.exists(CONFIG['faiss_index_path']):
+            raise FileNotFoundError("FAISS index not found on Node 1.")
+        self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])
+        print(f"Loaded FAISS Index.")
+        super().__init__(max_size, max_wait_ms)
+    def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         """
         Main Node 1 code (FAISS index lookup only)
         Input: [{'embedding': list, 'query': str}]
@@ -292,37 +211,30 @@ class PipelineStages:
         results = []
         for idx, doc_ids in enumerate(doc_id_batches):
             results.append({
-                'query': batch_data[idx]['query'],
                 'doc_ids': doc_ids
-            })
-            
-        print(results[0])
-            
+            })            
         return results
 
+class DocFetch(Base_Service): 
+    def __init__(self, max_size, max_wait_ms): 
+        self.db_path = f"{CONFIG['documents_path']}/documents.db"
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False) # all threads read only
+
+        super().__init__(max_size, max_wait_ms)
     
-    # NODE 2 UTILITIES (Doc Fetch, Rerank)
-    @time_function
-    def _fetch_documents_batch(self, unique_doc_ids: List[int]) -> Dict[int, Dict[str, Any]]:
-        """
-        Fetch all unique documents requested by the batch in a single query.
-        Input: list of unique doc_ids
-        Output: {doc_id: {'doc_id': int, 'title': str, 'content': str, 'category': str}}
-        """
-        if not unique_doc_ids:
-            return {}
-            
-        db_path = f"{CONFIG['documents_path']}/documents.db"
-        conn = sqlite3.connect(db_path, check_same_thread=False) # all threads read only
-        cursor = conn.cursor()
+    def _batch_job(self, batch_ids: list[str], batch_data: List[Dict]) -> List[Dict]: 
+        doc_ids = set()
+        for data in batch_data:
+            doc_ids.update(data.get('doc_ids', []))
         
+        cursor = self.conn.cursor()
         doc_map = {}
-        doc_ids_str = ','.join('?' * len(unique_doc_ids))
+        doc_ids_str = ','.join('?' * len(doc_ids))
         
         # Single batched SQL query
         cursor.execute(
             f'SELECT doc_id, title, content, category FROM documents WHERE doc_id IN ({doc_ids_str})',
-            unique_doc_ids
+            doc_ids
         )
         
         for result in cursor.fetchall():
@@ -333,21 +245,34 @@ class PipelineStages:
                 'content': content,
                 'category': category
             }
-        conn.close()
-        return doc_map
-    @time_function
-    def _rerank_documents_batch(self, query_document_pairs: List[List[str]]) -> List[float]:
-        """
-        Rerank retrieved documents using a single batch inference call.
-        Input: [[query_1, doc_1], [query_1, doc_2], [query_2, doc_1], ...]
-        Output: [score_1, score_2, score_3, ...]
-        """
-        if not query_document_pairs:
-            return []
+        results = []
+        for data in batch_data:
+            results.append({
+                doc_id: doc_map[doc_id] for doc_id in data.values()
+            })
+        return results
+
+class Rerank(Base_Service): 
+    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'): 
+        self.reranker_model_name = 'BAAI/bge-reranker-base'
+        self.reranker_tokenizer = AutoTokenizer.from_pretrained(self.reranker_model_name)
+        self.reranker_model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device).eval()
+        print("Loaded Reranker.")
+
+        super().__init__(max_size, max_wait_ms)
+    def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
+        query_doc_pairs = []
+        pair_counts = []
+        for data in batch_data: 
+            per_req_pair = []
+            for doc in data['doc_ids']: 
+                per_req_pair.append([data['query'], doc['content']])
+            pair_counts.append(len(per_req_pair))
+            query_doc_pairs.extend(per_req_pair)
         
         with torch.no_grad():
             inputs = self.reranker_tokenizer(
-                query_document_pairs,
+                query_doc_pairs,
                 padding=True,
                 truncation=True,
                 return_tensors='pt',
@@ -355,113 +280,40 @@ class PipelineStages:
             ).to(self.device) # type: ignore
             # Reranker scores are logits; we return them as float list
             scores = self.reranker_model(**inputs, return_dict=True).logits.view(-1, ).float().tolist() # type: ignore
-        
-        return scores        
-    @time_function
-    def _analyze_sentiment_batch(self, texts: List[str]) -> List[str]:
-        """Analyze sentiment for a batch of responses."""
-        truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = self.sentiment_classifier(truncated_texts) # type: ignore
-        sentiment_map = {
-            '1 star': 'very negative',
-            '2 stars': 'negative',
-            '3 stars': 'neutral',
-            '4 stars': 'positive',
-            '5 stars': 'very positive'
-        }
-        return [sentiment_map.get(res['label'], 'FAILURE') for res in raw_results]
-    @time_function
-    def _filter_safety_batch(self, texts: List[str]) -> List[str]:
-        """Filter response for safety for a batch of responses."""
-        truncated_texts = [text[:CONFIG['truncate_length']] for text in texts]
-        raw_results = self.safety_classifier(truncated_texts) 
-        
-        results = []
-        for res in raw_results:
-            is_toxic = res['score'] > 0.5
-            results.append("true" if is_toxic else "false")
-            
-        return results
 
-    @time_function
-    def process_llm_rag_analysis_batch(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
-        """
-        Main Node 2 logic: RAG (Unified Fetch/Batch Rerank), LLM, and Analysis, optimized for CPU throughput.
-        Input: [{'query': str, 'embedding': list, 'doc_ids': list}]
-        Output: final response fields
-        """
-        
-        # --- 1. Collect Unique IDs (Set Operation) ---
-        all_requested_doc_ids = set()
-        for data in batch_data:
-            all_requested_doc_ids.update(data['doc_ids'])
-
-        # --- 2. Single Batch Document Fetching ---
-        # Convert set to list for the SQL query and perform the single fetch.
-        unique_doc_ids_list = list(all_requested_doc_ids)
-        # master_doc_map: {doc_id: full_document_content}
-        master_doc_map = self._fetch_documents_batch(unique_doc_ids_list)
-        
-        # --- 3. Reranking Preparation (Map Content Back) ---
-        
-        query_document_pairs = []
-        pair_counts = []
-        
-        for data in batch_data:
-            query = data['query']
-            request_pairs = []
-            
-            # Use master_doc_map to look up content for this request's specific doc_ids
-            for doc_id in data['doc_ids']:
-                doc = master_doc_map.get(doc_id)
-                if doc: # Only add if the document was successfully fetched
-                    request_pairs.append([query, doc['content']])
-            
-            query_document_pairs.extend(request_pairs)
-            pair_counts.append(len(request_pairs)) # Count of pairs for this request
-
-        # --- 4. Reranking (Model Batching) ---
-        
-        # Single batch inference call for reranking across ALL requests
-        rerank_scores = self._rerank_documents_batch(query_document_pairs)
-        
-        # --- 5. Context Construction ---
-        
         context_list = []
         score_idx = 0
-        
+        res = []
         for i, data in enumerate(batch_data):
             count = pair_counts[i]
             
-            # Reconstruct the documents and scores for the current request
-            # Note: We need to pull the original document objects *again* to get titles/metadata, 
-            # using the original doc_ids and the master_doc_map.
+            current_scores = scores[score_idx : score_idx + count]
             
-            # Re-associate scores with documents based on the original doc_ids list
-            current_scores = rerank_scores[score_idx : score_idx + count]
-            
-            # This assumes the order of documents in query_document_pairs for this request matches 
-            # the order of valid documents in data['doc_ids'].
-            doc_scores = []
-            valid_docs = [master_doc_map[doc_id] for doc_id in data['doc_ids'] if doc_id in master_doc_map]
-            
-            for doc, score in zip(valid_docs, current_scores):
-                doc_scores.append((doc, score))
-
-            doc_scores.sort(key=lambda x: x[1], reverse=True)
-            
-            # Build context from top 3 reranked documents
-            context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc, _ in doc_scores[:3]])
-            context_list.append(context)
+            res.append({"scores": current_scores})
             
             score_idx += count
+        # docs will still have to be sorted
+        return res
 
+class LLM(Base_Service): 
+    def __init__(self, max_size, max_wait_ms, device: str = 'cpu'): 
+        self.llm_model_name = 'Qwen/Qwen2.5-0.5B-Instruct'
+        self.device = device
 
-        # --- 6. LLM Generation (Model Batching) ---
-        
-        # ... (LLM Generation logic remains the same, using context_list) ...
+        self.llm_tokenizer = AutoTokenizer.from_pretrained(self.llm_model_name)
+        self.llm_model = AutoModelForCausalLM.from_pretrained(
+            self.llm_model_name,
+            torch_dtype=torch.float16, 
+        ).to(self.device)
+        self.llm_model.eval()
+        print("Loaded LLM.")
+
+        super().__init__(max_size, max_wait_ms)
+    def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         llm_input_texts = []
-        for query, context in zip([d['query'] for d in batch_data], context_list):
+        for data in batch_data:
+            query = data['query']
+            context = data['context']
             messages = [
                 {"role": "system",
                 "content": "When given Context and Question, reply as 'Answer: <final answer>' only."},
@@ -488,30 +340,58 @@ class PipelineStages:
         input_length = model_inputs.input_ids.shape[1]
         generated_ids = generated_ids[:, input_length:]
         generated_responses = self.llm_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+        return [{"generated_response": gr} for gr in generated_responses]
+    
+class Sentiment(Base_Service): 
+    def __init__(self, max_size, max_wait_ms, device:str = "cpu"): 
+        self.device = device
+
+        self.sentiment_model_name = 'nlptown/bert-base-multilingual-uncased-sentiment'
+        self.sentiment_classifier = hf_pipeline(
+            "sentiment-analysis",
+            model=self.sentiment_model_name,
+            device=self.device
+        )
+        print("Loaded Sentiment Classifier.")
+
+        super().__init__(max_size, max_wait_ms)
+    def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
+        truncated_texts = [data['generated_response'][:CONFIG['truncate_length']] for data in batch_data]
+        raw_results = self.sentiment_classifier(truncated_texts) 
+        sentiment_map = {
+            '1 star': 'very negative',
+            '2 stars': 'negative',
+            '3 stars': 'neutral',
+            '4 stars': 'positive',
+            '5 stars': 'very positive'
+        }
+        return [{"sentiment": sentiment_map.get(res['label'], 'neutral')} for res in raw_results]
+
+class Safety(Base_Service): 
+    def __init__(self, max_size, max_wait_ms, device:str = "cpu"): 
+        self.device = device
+        self.safety_model_name = 'unitary/toxic-bert'
+
+        self.safety_classifier = hf_pipeline(
+            "text-classification",
+            model=self.safety_model_name,
+            device=self.device
+        )
+        print("Loaded Safety Classifier.")
+        super().__init__(max_size, max_wait_ms)
+    
+    def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
+        """Filter response for safety for a batch of responses."""
+        truncated_texts = [data['response'][:CONFIG['truncate_length']] for data in batch_data]
+        raw_results = self.safety_classifier(truncated_texts) 
         
-        
-        # --- 7. Analysis (Model Batching) ---
-        
-        sentiment_results = self._analyze_sentiment_batch(generated_responses)
-        safety_results = self._filter_safety_batch(generated_responses)
-        
-        # --- 8. Final Results Consolidation ---
-        
-        final_results = []
-        for generated_response, sentiment, is_toxic in zip(generated_responses, sentiment_results, safety_results):
-            final_results.append({
-                'generated_response': generated_response,
-                'sentiment': sentiment,
-                'is_toxic': is_toxic
-            })
+        results = []
+        for res in raw_results:
+            is_toxic = res['score'] > 0.5
+            results.append({"is_toxic": "true" if is_toxic else "false"})
             
-        return final_results
-
-# SERVER 
-
-app = Flask(__name__)
-pipeline_stages = None
-batching_service = None
+        return results
 
 def get_node_ip(node_id):
     """Helper to get IP of a specific node."""
@@ -523,27 +403,26 @@ def get_node_ip(node_id):
         return f"http://{NODE_2_IP}"
     raise ValueError("Invalid node ID")
 
-def forward_request_batch(node_id: int, endpoint: str, batch_data: List[Dict]) -> List[Dict]:
+
+def forward_request(node_id: int, endpoint: str, data: Dict) -> Dict:
     """Handles inter-node communication."""
     url = f"{get_node_ip(node_id)}/{endpoint}"
     
-    payload = [{'request_id': data['id'], 'data': data['data']} for data in batch_data]
 
     try:
         start_time = time.time()
-        response = requests.post(url, json={'batch': payload}, timeout=300)
+        response = requests.post(url, json=data, timeout=300)
         end_time = time.time()
-        print(f"Node {NODE_NUMBER} -> Node {node_id} ({endpoint}): {len(batch_data)} items, took {end_time - start_time:.4f}s")
+        print(f"Node {NODE_NUMBER} -> Node {node_id} ({endpoint}): took {end_time - start_time:.4f}s")
         
         response.raise_for_status() 
-        return response.json()['results']
+        return response.json()
         
     except requests.exceptions.RequestException as e:
         print(f"Forwarding error to Node {node_id} on {endpoint}: {e}")
         # Re-raise to be caught by the batching worker and set as Future exception
         raise
 
-# NODE 0: Entrypoint & Orchestration
 
 @app.route('/query', methods=['POST'])
 def handle_query():
@@ -552,115 +431,114 @@ def handle_query():
         return jsonify({'error': 'Only Node 0 handles client queries'}), 400
     
     try:
-        data = request.json
+        if NODE_NUMBER == 0: 
+            worker_id = get_next_worker_url()
+
+            if worker_id == 1: 
+                return forward_request(1, "/query", request.json), 200
+
+
+        data = request.json # request_id, query
         request_id = data.get('request_id')
         query = data.get('query')
-        
-        if not request_id:
-            return jsonify({'error': 'Missing request_id'}), 400
-        if not query: 
-            return jsonify({'error': "Missing query"}), 400
-        start_time = time.time()
-        
-        # 1. Submit to Node 0's local embedding batcher
-        future_embed = batching_service.submit(
-            request_id,
-            {'query': query}
-        )
-        
-        # Block until embedding is ready
+
+        future_embed = embedder_service.submit(request_id, {'query': query})
         embedded_result = future_embed.result(timeout=300)
         
-        # 2. Forward to Node 1 for FAISS retrieval (returns doc IDs)
-        node1_result = forward_request_batch(
-            node_id=1,
-            endpoint='retrieval_batch',
-            batch_data=[{'id': request_id, 'data': embedded_result}]
-        )[0] 
-
-        # 3. Forward to Node 2 for RAG (Fetch/Rerank) + LLM/Analysis
-        node2_result = forward_request_batch(
+        # --- 2. FORWARD to Node 2 for FAISS RETRIEVAL ---
+        # Node 2 expects a batch, we send a batch of size 1
+        node2_result = forward_request(
             node_id=2,
-            endpoint='llm_rag_analysis_batch',
-            batch_data=[{'id': request_id, 'data': node1_result}]
-        )[0]
+            endpoint='retrieval_batch',
+            data={'request_id': request_id, 'embedding': embedded_result}
+        ) # doc id: [int]
+        
+        # embedder_service, docfetch_service, rerank_service, llm_service, sentiment_service, safety_service, faiss_service
+        future_doc_fetch = docfetch_service.submit(request_id, node2_result) 
+        doc_fetch_results = future_doc_fetch.result(timeout=300)
 
-        # 4. Final Response
-        processing_time = time.time() - start_time
+        future_rerank = rerank_service.submit(request_id, {"query": query, "doc_ids": doc_fetch_results})
+        rerank_results = future_rerank.result(timeout=300)
+
+        zipped = zip(doc_fetch_results, rerank_results['scores'])
+        doc_scores = sorted(zipped, lambda x: x[1], reverse=True)
+        context = "\n".join([f"- {doc['title']}: {doc['content'][:200]}" for doc, _ in doc_scores[:3]])
+
+        future_llm = llm_service.submit(request_id, {"query": query, "context": context})
+        llm_results = future_llm.result(timeout=300)
+
+        future_sentiment = sentiment_service.submit(request_id, llm_results)
+        future_safety = safety_service.submit(request_id, llm_results)
+
+        sentiment_result = future_sentiment.result(timeout=300)
+        safety_result = future_safety.result(timeout=100)
+
         
         return jsonify({
             'request_id': request_id,
-            'generated_response': node2_result['generated_response'],
-            'sentiment': node2_result['sentiment'],
-            'is_toxic': node2_result['is_toxic'],
-            'processing_time': f"{processing_time:.2f}s"
+            'generated_response': llm_results['generated_response'],
+            'sentiment': sentiment_result['sentiment'],
+            'is_toxic': safety_result['is_toxic'],
         }), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
 
-# NODE 1: FAISS Indexing
+@app.route('/process_pipeline_batch', methods=['POST'])
+def handle_pipeline_batch():
+    """Endpoint for Node 0 to forward work to Node 1, and for Node 0 to execute locally."""
+    if NODE_NUMBER not in [0, 1]:
+        return jsonify({'error': 'This pipeline runs on Node 0 or Node 1'}), 403
+    
+    try:
+        data = request.json.get('batch', [])
+        
+        # The received batch is processed by the local orchestration function
+        final_results_with_id = process_pipeline_batch_local(data)
+        
+        return jsonify({'results': final_results_with_id}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
 @app.route('/retrieval_batch', methods=['POST'])
 def handle_retrieval_batch():
-    """FAISS Retrieval (index search only) request endpoint (Node 1 only)."""
-    print('recieved')
-    if NODE_NUMBER != 1:
-        return jsonify({'error': 'FAISS retrieval runs only on Node 1'}), 403
-
-    # glue code
-    def process_retrieval_batch_wrapper(batch_ids, batch_data):
-        return pipeline_stages.process_retrieval_batch(batch_ids, batch_data)
-
-    try:
-        data = request.json.get('batch', [])
-        
-        
-        futures = []
-        for item in data:
-            # Need to convert list back to numpy array for the internal stage
-            item['data']['embedding'] = np.array(item['data']['embedding'])
-            futures.append(batching_service.submit(item['request_id'], item['data']))
-            
-        results_with_id = []
-        for f, item in zip(futures, data):
-            result = f.result(timeout=300)
-            # Re-package with request_id for the next hop
-            results_with_id.append({'request_id': item['request_id'], **result})
-            
-        return jsonify({'results': results_with_id}), 200
-
-    except Exception as e:
-        print('error', e)
-        return jsonify({'error': str(e)}), 500
-
-# Node 2
-@app.route('/llm_rag_analysis_batch', methods=['POST'])
-def handle_llm_rag_analysis_batch():
-    """LLM + RAG + Analysis request endpoint (Node 2 only)."""
+    """FAISS Retrieval (index search only) request endpoint (Node 2 only)."""
     if NODE_NUMBER != 2:
-        return jsonify({'error': 'LLM/RAG/Analysis runs only on Node 2'}), 403
-
-    def process_llm_rag_analysis_batch_wrapper(batch_ids, batch_data):
-        return pipeline_stages.process_llm_rag_analysis_batch(batch_ids, batch_data)
+        return jsonify({'error': 'FAISS retrieval runs only on Node 2'}), 403
 
     try:
-        data = request.json.get('batch', [])
+        data = request.json # type: ignore
         
-        # Submit to local batcher
         futures = []
-        for item in data:
-            futures.append(batching_service.submit(item['request_id'], item['data']))
+        # Must convert list back to numpy array for FAISS processing
+        f = faiss_service.submit(data['request_id'], data['embedding'])
             
-        results_with_id = []
-        for f, item in zip(futures, data):
-            result = f.result(timeout=300)
-            # Final result is already in the expected format, just add ID
-            results_with_id.append({'request_id': item['request_id'], **result})
-        
-        return jsonify({'results': results_with_id}), 200
+        result = f.result(timeout=300)
+            
+        return jsonify(result), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# SERVER 
+pipeline_stages = None
+batching_service = None
+
+PIPELINE_WORKER_URLS = [0, 1]
+FAISS_NODE_URL = f"http://{NODE_2_IP}/retrieval_batch"
+
+# Round-Robin state for pipeline workers
+worker_cycler = itertools.cycle(PIPELINE_WORKER_URLS)
+selection_lock = threading.Lock() 
+
+def get_next_worker_url():
+    """Gets the next node URL for the main pipeline processing."""
+    with selection_lock:
+        return next(worker_cycler)
 
 
 @app.route('/health', methods=['GET'])
@@ -674,32 +552,31 @@ def health():
 
 
 def main():
-    global pipeline_stages, batching_service
+    global embedder_service, docfetch_service, rerank_service, llm_service, sentiment_service, safety_service, faiss_service    
     
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     print(f"Node {NODE_NUMBER} initializing on device: {device}")
     
-    pipeline_stages = PipelineStages(device)
-    pipeline_stages.load_models_for_node(NODE_NUMBER)
+    if NODE_NUMBER in [0, 1]:
+        # NOTE: MAX_BATCH_SIZE and MAX_WAIT_TIME_MS must be defined in CONFIG
+        
+        embedder_service = Embedder(MAX_SIZE, MAX_WAIT, device)
+        docfetch_service = DocFetch(MAX_SIZE, MAX_WAIT)
+        rerank_service = Rerank(MAX_SIZE, MAX_WAIT, device)
+        llm_service = LLM(MAX_SIZE, MAX_WAIT, device)
+        sentiment_service = Sentiment(MAX_SIZE, MAX_WAIT, device)
+        safety_service = Safety(MAX_SIZE, MAX_WAIT, device)
+        
+        print(f"Node {NODE_NUMBER} loaded full pipeline services.")
+        
+    # Node 2 loads only FAISS
+    elif NODE_NUMBER == 2:
+        MAX_SIZE = CONFIG.get('MAX_BATCH_SIZE', 128) # FAISS can handle larger batches
+        MAX_WAIT = CONFIG.get('MAX_WAIT_TIME_MS', 10)
+        
+        faiss_service = FAISS(MAX_SIZE, MAX_WAIT)
+        print(f"Node {NODE_NUMBER} loaded FAISS service only.")
     
-    # Define the appropriate processing function for the local batcher
-    # Node 1 now runs the FAISS lookup only
-    # Node 2 now runs RAG (Fetch/Rerank) + LLM + Analysis
-    processing_map = {
-        0: pipeline_stages.process_embedding_batch,
-        1: pipeline_stages.process_retrieval_batch,
-        2: pipeline_stages.process_llm_rag_analysis_batch
-    }
-    
-    if NODE_NUMBER in processing_map:
-        batching_service = BatchingService(
-            process_batch_func=processing_map[NODE_NUMBER],
-            max_size=CONFIG['MAX_BATCH_SIZE'],
-            max_wait_ms=CONFIG['MAX_WAIT_TIME_MS']
-        )
-    else:
-        print("Warning: Node number not configured for any service.")
-
     # Determine hostname and port
     if NODE_NUMBER == 0: ip_port = NODE_0_IP
     elif NODE_NUMBER == 1: ip_port = NODE_1_IP
