@@ -7,7 +7,7 @@
 ENV_VARS=(
     TOTAL_NODES=3 
     NODE_NUMBER=2 
-    NODE_0_IP=132.236.91.188:8000 
+    NODE_0_IP=132.236.91.184:8000 
     NODE_1_IP=132.236.91.188:8001 
     NODE_2_IP=132.236.91.188:8002 
 )
@@ -52,7 +52,11 @@ echo "Command to run: ${PROGRAM_CMD_ARR[@]}"
 # 1. Start the target program in the background
 echo "Starting process: $PROCESS_NAME"
 # Use the array expansion "${PROGRAM_CMD_ARR[@]}" with the 'env' executable
-"${PROGRAM_CMD_ARR[@]}" &
+( 
+    # Execute the program, piping its stdout and stderr (using '2>&1') to 'tee'
+    # 'tee' will write to the log file AND to the parent script's stdout
+    "${PROGRAM_CMD_ARR[@]}" 2>&1 | tee "events.log"
+) &
 CHILD_PID=$!
 echo "Monitored Process PID: $CHILD_PID"
 

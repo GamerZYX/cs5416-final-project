@@ -82,15 +82,15 @@ class BatchingService:
     Manages the input queue and runs the opportunistic batching worker.
     """
     
-    def __init__(self, process_batch_func, max_size, max_wait_ms):
+    def __init__(self, process_batch_func, max_size, max_wait_ms, name):
         self.input_queue = Queue()
         self.process_batch_func = process_batch_func
         self.max_size = max_size
         self.max_wait = max_wait_ms / 1000.0 # Convert ms to seconds
-        
+        self.name = name
         self.worker_thread = threading.Thread(target=self._worker, daemon=True)
         self.worker_thread.start()
-        print(f"Batching Service started for Node {NODE_NUMBER}")
+        print(f"Batching Service {self.name} started for Node {NODE_NUMBER}", )
 
     def submit(self, request_id: str, data: Dict[str, Any]) -> Future:
         """
@@ -126,21 +126,25 @@ class BatchingService:
             ):
                 
                 # TODO: DEL ME
+                report = "[{NODE_NUMBER}, {self.name}]\n"
                 if (len(current_batch) >= self.max_size): 
-                    print("\t Batch triggered: Queue Full after", time_elapsed)
+                    report += f"\tBatch triggered: Queue Full after {time_elapsed}\n"
                 else: 
-                    print("\t Batch triggered: Timed out with batch size", len(current_batch))
+                    report += f"\tBatch triggered: Timed out with batch size {len(current_batch)}\n"
                 
                 batch_ids = [item.request_id for item in current_batch]
                 batch_data = [item.data for item in current_batch]
                 
-                print(f"[{NODE_NUMBER}]Processing batch of size {len(current_batch)}")
+                report += f"\tProcessing batch of size {len(current_batch)}\n"
                 
                 try:
                     # process_batch_func should return a list of results 
                     # matching the order of the inputs
+                    start = time.perf_counter()
                     results = self.process_batch_func(batch_ids, batch_data)
-                    
+                    end = time.perf_counter()
+                    report += f"\tProcessed in {end - start} seconds\n"
+                    print(report)
                     # 4. Set results/exceptions on the Futures
                     for item, result in zip(current_batch, results):
                         item.future.set_result(result)
@@ -159,8 +163,8 @@ class BatchingService:
                 time.sleep(0.001)
 
 class Base_Service(ABC): 
-    def __init__(self, max_size, max_wait_ms): 
-        self.batch_service = BatchingService(self._batch_job, max_size, max_wait_ms)
+    def __init__(self, max_size, max_wait_ms, name): 
+        self.batch_service = BatchingService(self._batch_job, max_size, max_wait_ms, name)
     def submit(self, request_id, data:Dict[str, Any]) -> Future: 
         return self.batch_service.submit(request_id, data)
     @abstractmethod
@@ -174,7 +178,7 @@ class Embedder(Base_Service):
             self.embedding_model = SentenceTransformer(self.embedding_model_name).to(self.device)
             print(f"Loaded Embedder: {self.embedding_model_name}.")
 
-            super().__init__(max_size, max_wait_ms)
+            super().__init__(max_size, max_wait_ms, "Embedder")
     
     def _batch_job(self, batch_id: list[str], batch_data: List[Dict]) -> List[Dict]: 
         queries = [data['query'] for data in batch_data]
@@ -193,9 +197,9 @@ class FAISS(Base_Service):
     def __init__(self, max_size, max_wait_ms): 
         if not os.path.exists(CONFIG['faiss_index_path']):
             raise FileNotFoundError("FAISS index not found on Node 1.")
-        self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])
+        self.faiss_index = faiss.read_index(CONFIG['faiss_index_path'])#, faiss.IO_FLAG_MMAP)
         print(f"Loaded FAISS Index.")
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "FAISS")
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         """
         Main Node 1 code (FAISS index lookup only)
@@ -219,7 +223,7 @@ class DocFetch(Base_Service):
         self.db_path = f"{CONFIG['documents_path']}/documents.db"
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False) # all threads read only
 
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "DB Fetch")
     
     def _batch_job(self, batch_ids: list[str], batch_data: List[Dict]) -> List[Dict]:
         doc_ids = set()
@@ -260,7 +264,7 @@ class Rerank(Base_Service):
         self.reranker_model = AutoModelForSequenceClassification.from_pretrained(self.reranker_model_name).to(self.device).eval()
         print("Loaded Reranker.")
 
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "Reranker")
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         query_doc_pairs = []
         pair_counts = []
@@ -341,7 +345,7 @@ class LLM(Base_Service):
         generated_ids = generated_ids[:, input_length:]
         generated_responses = self.llm_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
         return [{"generated_response": gr} for gr in generated_responses]
-    
+
 class Sentiment(Base_Service): 
     def __init__(self, max_size, max_wait_ms, device): 
         self.device = device
@@ -354,7 +358,7 @@ class Sentiment(Base_Service):
         )
         print("Loaded Sentiment Classifier.")
 
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "Sentiment")
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         truncated_texts = [data['generated_response'][:CONFIG['truncate_length']] for data in batch_data]
         raw_results = self.sentiment_classifier(truncated_texts) 
@@ -378,7 +382,7 @@ class Safety(Base_Service):
             device=self.device
         )
         print("Loaded Safety Classifier.")
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "Safety")
     
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         """Filter response for safety for a batch of responses."""
