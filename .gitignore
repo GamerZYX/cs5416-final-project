@@ -55,3 +55,4 @@ test.py
 *.tmp
 *.bak
 *.cache
+results/

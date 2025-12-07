@@ -82,7 +82,7 @@ while true; do
     echo "$CURRENT_TIME,$TIME_RELATIVE,$MEMORY_DATA" >> "$LOGFILE"
     
     # Output status to terminal
-    echo -e "Time: ${TIME_RELATIVE}s | RSS: $(echo "$MEMORY_DATA" | cut -d',' -f1) KB \r"
+    # echo -e "Time: ${TIME_RELATIVE}s | RSS: $(echo "$MEMORY_DATA" | cut -d',' -f1) KB \r"
     
     sleep $INTERVAL
 done
