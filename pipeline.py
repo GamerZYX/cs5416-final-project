@@ -313,7 +313,7 @@ class LLM(Base_Service):
         self.llm_model.eval()
         print("Loaded LLM.")
 
-        super().__init__(max_size, max_wait_ms)
+        super().__init__(max_size, max_wait_ms, "LLM")
     def _batch_job(self, batch_ids: List[str], batch_data: List[Dict]) -> List[Dict]:
         llm_input_texts = []
         for data in batch_data:
