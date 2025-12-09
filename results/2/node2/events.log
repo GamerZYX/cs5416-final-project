@@ -1,0 +1,35 @@
+/usr/lib/python3/dist-packages/scipy/__init__.py:146: UserWarning: A NumPy version >=1.17.3 and <1.25.0 is required for this version of SciPy (detected version 1.26.4
+  warnings.warn(f"A NumPy version >={np_minversion} and <{np_maxversion}"
+Node 2 initializing on device: cpu
+Loaded FAISS Index.
+Batching Service FAISS started for Node 2
+Node 2 loaded FAISS service only.
+
+Starting Flask server on 132.236.91.188:8002
+ * Serving Flask app 'pipeline'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://132.236.91.188:8002
+Press CTRL+C to quit
+[2, FAISS]
+	Batch triggered: Timed out with batch size 4
+	Processing batch of size 4
+	Processed in 2.996836520032957 seconds
+
+132.236.91.184 - - [07/Dec/2025 16:09:25] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.184 - - [07/Dec/2025 16:09:25] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.184 - - [07/Dec/2025 16:09:25] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.184 - - [07/Dec/2025 16:09:25] "POST /retrieval_batch HTTP/1.1" 200 -
+faiss_result {'doc_ids': [3034496, 305152, 4137564, 4270632, 2736809, 41759, 1505382, 1288673, 946117, 4365163]}
+faiss_result {'doc_ids': [3034496, 4137564, 305152, 41759, 2736809, 4270632, 4365163, 1505382, 2747210, 546494]}
+faiss_result {'doc_ids': [3034496, 4137564, 305152, 4270632, 41759, 546494, 2747210, 4365163, 946117, 1505382]}
+faiss_result {'doc_ids': [3034496, 4137564, 4270632, 305152, 2736809, 2747210, 41759, 4365163, 1505382, 3924266]}
+[2, FAISS]
+	Batch triggered: Timed out with batch size 4
+	Processing batch of size 4
+	Processed in 1.4093066931236535 seconds
+
+132.236.91.188 - - [07/Dec/2025 16:09:27] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.188 - - [07/Dec/2025 16:09:27] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.188 - - [07/Dec/2025 16:09:27] "POST /retrieval_batch HTTP/1.1" 200 -
+132.236.91.188 - - [07/Dec/2025 16:09:27] "POST /retrieval_batch HTTP/1.1" 200 -

@@ -35,6 +35,13 @@ results_lock = threading.Lock()
 requests_sent = []
 requests_lock = threading.Lock()
 
+configs = [
+    (1,0), # single req
+    (2,0), # round robining
+    (8,0), # ideally enough to batch everything
+    (4, 25), # when going through slowly
+    (16, 0) # too fast for sys to handle 
+]
 
 def send_request_async(request_id: str, query: str, send_time: float):
     """Send a single request to the server asynchronously"""
@@ -127,11 +134,12 @@ def main():
     
     start_time = time.time()
     threads = []
-    
+    N_REQ, WAIT_TIME = configs[0]
+
     # Send 6 requests at 10-second intervals
-    for i in range(6):
+    for i in range(N_REQ):
         # Calculate when this request should be sent
-        target_send_time = start_time + (i * 10)
+        target_send_time = start_time + (i * WAIT_TIME)
         
         # Wait until the target send time
         current_time = time.time()
@@ -169,39 +177,50 @@ def main():
     print("\n" + "="*70)
     print("SUMMARY")
     print("="*70)
-    print(f"Total requests sent: 6")
+    print(f"Total requests sent: {N_REQ}")
     
     with results_lock:
         successful = sum(1 for r in results.values() if r.get('success', False))
         print(f"Successful responses: {successful}")
-        print(f"Failed requests: {6 - successful}")
+        print(f"Failed requests: {N_REQ - successful}")
     
     print(f"Total elapsed time: {total_time:.2f}s")
     
+    res = {}
     with results_lock:
         if results:
             print("\nResults:")
             with requests_lock:
                 for i, req_info in enumerate(requests_sent, 1):
                     req_id = req_info['request_id']
+                    res[req_id] = {}
                     if req_id in results:
                         res_info = results[req_id]
                         print(f"\n{i}. Request ID: {req_id}")
                         print(f"   Query: {req_info['query'][:60]}...")
                         
                         if res_info.get('success'):
+                            res[req_id]['status'] = 'success'
                             result = res_info['result']
                             print(f"   Success (took {res_info['elapsed_time']:.2f}s)")
+                            res[req_id]['took']= res_info['elapsed_time']
                             print(f"   Sentiment: {result.get('sentiment')}")
                             print(f"   Is Toxic: {result.get('is_toxic')}")
                             print(f"   Response: {result.get('generated_response', '')[:80]}...")
                         else:
+                            res[req_id]['status'] = 'failed'
                             print(f"   Failed: {res_info.get('error', 'Unknown error')}")
+                        
                     else:
+                        res[req_id]['status'] = 'failed'
                         print(f"\n{i}. Request ID: {req_id}")
                         print(f"   ⏳ Still pending or not received")
+                    
     
     print("\n" + "="*70)
+
+    with open(f"res_nreq{N_REQ}_wait{WAIT_TIME}.json", 'w') as f: 
+        json.dump(res, f)
 
 
 if __name__ == "__main__":
