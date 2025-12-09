@@ -551,10 +551,8 @@ def main():
         
     # Node 2 loads only FAISS
     elif NODE_NUMBER == 2:
-        MAX_SIZE = CONFIG.get('MAX_BATCH_SIZE', 128) # FAISS can handle larger batches
-        MAX_WAIT = CONFIG.get('MAX_WAIT_TIME_MS', 10)
         
-        faiss_service = FAISS(MAX_SIZE, MAX_WAIT)
+        faiss_service = FAISS(16, 500)
         print(f"Node {NODE_NUMBER} loaded FAISS service only.")
     
     # Determine hostname and port
